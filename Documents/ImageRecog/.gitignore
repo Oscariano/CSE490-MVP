@@ -1,0 +1,21 @@
+venv/
+ENV/
+.env
+
+# AI Models (These are huge, don't push them!)
+*.pt
+*.onnx
+*.weights
+
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# User Uploads/Tests
+*.jpg
+*.png
+*.heic
