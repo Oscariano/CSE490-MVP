@@ -1,6 +1,10 @@
-'use client'
+"use client"
 
-import { useState, useRef } from 'react'
+import { useState } from 'react'
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
+import { initializeFirebase } from '@/lib/firebase'
+import { useAuth } from '@/contexts/auth-context'
+
 import {
   Dialog,
   DialogContent,
@@ -20,82 +24,69 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Plus, Upload, Loader2, Sparkles, X, MapPin } from "lucide-react"
+import { Plus, Image as ImageIcon, MapPin } from "lucide-react"
 import { toast } from "sonner"
-import { identifyItem, generateDescriptionFromAI } from "@/lib/image-recognition"
 import { ITEM_CATEGORIES, STORAGE_LOCATIONS } from "@/lib/types"
-import type { AIDescription, ItemLocation } from "@/lib/types"
+import type { ItemLocation } from "@/lib/types"
 import { LocationPicker } from "@/components/location-picker"
 
 export function AddItemDialog() {
+  const { userProfile } = useAuth()
+  
   const [open, setOpen] = useState(false)
-  const [isAnalyzing, setIsAnalyzing] = useState(false)
-  const [imagePreview, setImagePreview] = useState<string | null>(null)
-  const [aiDescription, setAiDescription] = useState<AIDescription | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [foundLocation, setFoundLocation] = useState<ItemLocation | null>(null)
+  
   const [formData, setFormData] = useState({
     name: '',
     category: '',
     description: '',
     dateFound: '',
-    location: '',
     storageLocation: '',
+    imageUrl: '', // Changed from file upload to simple URL string
   })
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      setImagePreview(e.target?.result as string)
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    if (!userProfile?.orgId) {
+      toast.error("Error: No organization linked to your account.")
+      return
     }
-    reader.readAsDataURL(file)
 
-    setIsAnalyzing(true)
-    toast.info("Analyzing image with AI...")
+    setIsSubmitting(true)
 
     try {
-      const result = await identifyItem(file)
-      if (result) {
-        setAiDescription(result)
-        const generatedDescription = generateDescriptionFromAI(result)
-        setFormData(prev => ({
-          ...prev,
-          name: result.item ? `${result.color} ${result.item}`.trim() : prev.name,
-          description: generatedDescription,
-        }))
-        toast.success("AI analysis complete!", {
-          description: `Detected: ${result.item} (${Math.round(result.confidence * 100)}% confidence)`,
-        })
-      } else {
-        toast.warning("Could not identify item", {
-          description: "Please enter details manually.",
-        })
-      }
-    } catch {
-      toast.error("Failed to analyze image", {
-        description: "Please try again or enter details manually.",
+      const { db } = initializeFirebase()
+      
+      // Auto-calculate expiration (e.g., 90 days from logging)
+      const expiration = new Date()
+      expiration.setDate(expiration.getDate() + 90)
+
+      await addDoc(collection(db, 'items'), {
+        name: formData.name,
+        category: formData.category,
+        description: formData.description,
+        dateFound: formData.dateFound ? new Date(formData.dateFound) : null,
+        dateLogged: serverTimestamp(),
+        expirationDate: expiration,
+        storageLocation: formData.storageLocation,
+        locationAddress: foundLocation?.address || null,
+        coordinates: foundLocation ? { lat: foundLocation.lat, lng: foundLocation.lng } : null,
+        status: 'available',
+        imageUrl: formData.imageUrl,
+        orgId: userProfile.orgId // Link item to the user's organization
       })
+
+      toast.success("Item added to inventory")
+      setOpen(false)
+      resetForm()
+    } catch (error) {
+      console.error("Error adding document: ", error)
+      toast.error("Failed to add item to inventory")
     } finally {
-      setIsAnalyzing(false)
+      setIsSubmitting(false)
     }
-  }
-
-  const clearImage = () => {
-    setImagePreview(null)
-    setAiDescription(null)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
-  }
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    toast.success("Item added to inventory")
-    setOpen(false)
-    resetForm()
   }
 
   const resetForm = () => {
@@ -104,15 +95,10 @@ export function AddItemDialog() {
       category: '',
       description: '',
       dateFound: '',
-      location: '',
       storageLocation: '',
+      imageUrl: '',
     })
-    setImagePreview(null)
-    setAiDescription(null)
     setFoundLocation(null)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
   }
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -134,73 +120,46 @@ export function AddItemDialog() {
         <DialogHeader>
           <DialogTitle className="text-foreground">Catalog Lost Item</DialogTitle>
           <DialogDescription>
-            Upload an image for AI-powered description or enter details manually.
+            Enter the details of the item and provide an image link.
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            
             {/* Left column: form fields */}
             <div className="space-y-4">
+              
+              {/* Replaced File Upload with Image URL Input */}
               <div className="space-y-2">
-                <Label>Item Image</Label>
-                <div className="relative">
-                  {imagePreview ? (
-                    <div className="relative rounded-lg overflow-hidden border border-border">
-                      <img
-                        src={imagePreview}
-                        alt="Item preview"
-                        className="w-full h-40 object-cover"
-                      />
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="icon"
-                        className="absolute top-2 right-2 h-8 w-8"
-                        onClick={clearImage}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                      {aiDescription && (
-                        <div className="absolute bottom-2 left-2 bg-background/90 backdrop-blur-sm rounded-md px-2 py-1 flex items-center gap-1 text-xs">
-                          <Sparkles className="h-3 w-3 text-accent" />
-                          <span>AI: {aiDescription.item} ({Math.round(aiDescription.confidence * 100)}%)</span>
-                        </div>
-                      )}
+                <Label htmlFor="image-url">Image URL</Label>
+                <Input
+                  id="image-url"
+                  placeholder="https://example.com/image.jpg"
+                  className="bg-background border-border"
+                  value={formData.imageUrl}
+                  onChange={(e) => setFormData(prev => ({ ...prev, imageUrl: e.target.value }))}
+                />
+                
+                {formData.imageUrl ? (
+                  <div className="relative mt-2 rounded-lg overflow-hidden border border-border">
+                    <img
+                      src={formData.imageUrl}
+                      alt="Item preview"
+                      className="w-full h-32 object-cover"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = 'https://via.placeholder.com/400x200?text=Invalid+Image+URL'
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="mt-2 flex h-32 w-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/50">
+                    <div className="flex flex-col items-center gap-1 text-muted-foreground">
+                      <ImageIcon className="h-6 w-6" />
+                      <span className="text-xs">Image Preview</span>
                     </div>
-                  ) : (
-                    <label
-                      htmlFor="image-upload"
-                      className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-border rounded-lg cursor-pointer bg-background hover:bg-muted/50 transition-colors"
-                    >
-                      {isAnalyzing ? (
-                        <div className="flex flex-col items-center gap-2">
-                          <Loader2 className="h-6 w-6 animate-spin text-accent" />
-                          <span className="text-sm text-muted-foreground">Analyzing with AI...</span>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center gap-1">
-                          <Upload className="h-6 w-6 text-muted-foreground" />
-                          <span className="text-sm text-muted-foreground">
-                            Upload image for AI analysis
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            PNG, JPG up to 10MB
-                          </span>
-                        </div>
-                      )}
-                    </label>
-                  )}
-                  <input
-                    ref={fileInputRef}
-                    id="image-upload"
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleImageUpload}
-                    disabled={isAnalyzing}
-                  />
-                </div>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -211,6 +170,7 @@ export function AddItemDialog() {
                   className="bg-background border-border"
                   value={formData.name}
                   onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                  required
                 />
               </div>
 
@@ -219,6 +179,7 @@ export function AddItemDialog() {
                 <Select
                   value={formData.category}
                   onValueChange={(value) => setFormData(prev => ({ ...prev, category: value }))}
+                  required
                 >
                   <SelectTrigger className="bg-background border-border">
                     <SelectValue placeholder="Select a category" />
@@ -234,14 +195,7 @@ export function AddItemDialog() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="description">
-                  Description
-                  {aiDescription && (
-                    <span className="ml-2 text-xs text-accent font-normal">
-                      (AI-generated)
-                    </span>
-                  )}
-                </Label>
+                <Label htmlFor="description">Description</Label>
                 <Textarea
                   id="description"
                   placeholder="Describe the item in detail (color, condition, distinctive marks, etc.)"
@@ -249,6 +203,7 @@ export function AddItemDialog() {
                   rows={3}
                   value={formData.description}
                   onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+                  required
                 />
               </div>
 
@@ -260,6 +215,7 @@ export function AddItemDialog() {
                   className="bg-background border-border"
                   value={formData.dateFound}
                   onChange={(e) => setFormData(prev => ({ ...prev, dateFound: e.target.value }))}
+                  required
                 />
               </div>
 
@@ -268,6 +224,7 @@ export function AddItemDialog() {
                 <Select
                   value={formData.storageLocation}
                   onValueChange={(value) => setFormData(prev => ({ ...prev, storageLocation: value }))}
+                  required
                 >
                   <SelectTrigger className="bg-background border-border">
                     <SelectValue placeholder="Select storage location" />
@@ -318,7 +275,6 @@ export function AddItemDialog() {
                   <LocationPicker
                     onConfirm={(loc) => {
                       setFoundLocation(loc)
-                      setFormData(prev => ({ ...prev, location: loc.address }))
                       toast.success("Location confirmed", {
                         description: loc.address,
                       })
@@ -327,6 +283,7 @@ export function AddItemDialog() {
                 </div>
               )}
             </div>
+            
           </div>
 
           <div className="flex gap-2 justify-end pt-4 border-t border-border">
@@ -335,15 +292,16 @@ export function AddItemDialog() {
               variant="outline"
               onClick={() => handleOpenChange(false)}
               className="border-border"
+              disabled={isSubmitting}
             >
               Cancel
             </Button>
             <Button
               type="submit"
               className="bg-accent hover:bg-accent/90 text-accent-foreground"
-              disabled={isAnalyzing}
+              disabled={isSubmitting}
             >
-              Add Item
+              {isSubmitting ? "Adding..." : "Add Item"}
             </Button>
           </div>
         </form>
