@@ -1,9 +1,10 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 import { initializeFirebase } from '@/lib/firebase'
 import { useAuth } from '@/contexts/auth-context'
+import { identifyItem, generateDescriptionFromAI } from '@/lib/image-recognition'
 
 import {
   Dialog,
@@ -24,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Plus, Image as ImageIcon, MapPin } from "lucide-react"
+import { Plus, Image as ImageIcon, MapPin, Camera, Link } from "lucide-react"
 import { toast } from "sonner"
 import { ITEM_CATEGORIES, STORAGE_LOCATIONS } from "@/lib/types"
 import type { ItemLocation } from "@/lib/types"
@@ -35,16 +36,98 @@ export function AddItemDialog() {
   
   const [open, setOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [foundLocation, setFoundLocation] = useState<ItemLocation | null>(null)
-  
+  const [captureMode, setCaptureMode] = useState<'url' | 'camera'>('url')
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
   const [formData, setFormData] = useState({
     name: '',
     category: '',
     description: '',
     dateFound: '',
     storageLocation: '',
-    imageUrl: '', // Changed from file upload to simple URL string
+    imageUrl: '',
+    imageBase64: '',
   })
+
+  const startCamera = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      setStream(mediaStream)
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream
+      }
+    } catch (err) {
+      toast.error("Could not access camera", { description: "Please check your browser permissions." })
+      setCaptureMode('url')
+    }
+  }
+
+  const stopCamera = () => {
+    stream?.getTracks().forEach(t => t.stop())
+    setStream(null)
+  }
+
+  const capturePhoto = async () => {
+    const canvas = canvasRef.current
+    const video = videoRef.current
+    if (!canvas || !video) return
+
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d')?.drawImage(video, 0, 0)
+    const dataUrl = canvas.toDataURL('image/jpeg')
+
+    setFormData(prev => ({ ...prev, imageBase64: dataUrl, imageUrl: dataUrl }))
+    stopCamera()
+    setCaptureMode('url')
+    toast.success("Photo captured!")
+
+    try {
+      setIsAnalyzing(true)
+      const toastId = toast.loading("Analyzing image...")
+
+      // Convert base64 to File and use partner's utility
+      const res = await fetch(dataUrl)
+      const blob = await res.blob()
+      const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' })
+      const data = await identifyItem(file)
+
+      toast.dismiss(toastId)
+
+      if (data) {
+        setFormData(prev => ({
+          ...prev,
+          imageBase64: dataUrl,
+          imageUrl: dataUrl,
+          name: prev.name || data.item,
+          description: prev.description || generateDescriptionFromAI(data),
+        }))
+        toast.success(`Detected: ${data.color} ${data.item}`, {
+          description: `Confidence: ${(data.confidence * 100).toFixed(0)}%`
+        })
+      } else {
+        toast.warning("Couldn't identify item", { description: "Fill in details manually." })
+      }
+    } catch (err) {
+      toast.error("Image analysis failed", { description: "Fill in details manually." })
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }
+
+  const handleSwitchToCamera = () => {
+    setCaptureMode('camera')
+    startCamera()
+  }
+
+  const handleSwitchToUrl = () => {
+    stopCamera()
+    setCaptureMode('url')
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -59,7 +142,6 @@ export function AddItemDialog() {
     try {
       const { db } = initializeFirebase()
       
-      // Auto-calculate expiration (e.g., 90 days from logging)
       const expiration = new Date()
       expiration.setDate(expiration.getDate() + 90)
 
@@ -75,7 +157,8 @@ export function AddItemDialog() {
         coordinates: foundLocation ? { lat: foundLocation.lat, lng: foundLocation.lng } : null,
         status: 'available',
         imageUrl: formData.imageUrl,
-        orgId: userProfile.orgId // Link item to the user's organization
+        imageBase64: formData.imageBase64 || null,
+        orgId: userProfile.orgId
       })
 
       toast.success("Item added to inventory")
@@ -90,6 +173,8 @@ export function AddItemDialog() {
   }
 
   const resetForm = () => {
+    stopCamera()
+    setCaptureMode('url')
     setFormData({
       name: '',
       category: '',
@@ -97,6 +182,7 @@ export function AddItemDialog() {
       dateFound: '',
       storageLocation: '',
       imageUrl: '',
+      imageBase64: '',
     })
     setFoundLocation(null)
   }
@@ -120,7 +206,7 @@ export function AddItemDialog() {
         <DialogHeader>
           <DialogTitle className="text-foreground">Catalog Lost Item</DialogTitle>
           <DialogDescription>
-            Enter the details of the item and provide an image link.
+            Enter the details of the item and provide an image.
           </DialogDescription>
         </DialogHeader>
 
@@ -130,18 +216,65 @@ export function AddItemDialog() {
             {/* Left column: form fields */}
             <div className="space-y-4">
               
-              {/* Replaced File Upload with Image URL Input */}
               <div className="space-y-2">
-                <Label htmlFor="image-url">Image URL</Label>
-                <Input
-                  id="image-url"
-                  placeholder="https://example.com/image.jpg"
-                  className="bg-background border-border"
-                  value={formData.imageUrl}
-                  onChange={(e) => setFormData(prev => ({ ...prev, imageUrl: e.target.value }))}
-                />
-                
-                {formData.imageUrl ? (
+                <Label>Item Image</Label>
+
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={captureMode === 'url' ? 'default' : 'outline'}
+                    className="gap-1.5"
+                    onClick={handleSwitchToUrl}
+                  >
+                    <Link className="h-3.5 w-3.5" />
+                    Image URL
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={captureMode === 'camera' ? 'default' : 'outline'}
+                    className="gap-1.5"
+                    onClick={handleSwitchToCamera}
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                    Take Photo
+                  </Button>
+                </div>
+
+                {captureMode === 'url' && (
+                  <Input
+                    id="image-url"
+                    placeholder="https://example.com/image.jpg"
+                    className="bg-background border-border"
+                    value={formData.imageBase64 ? '' : formData.imageUrl}
+                    onChange={(e) => setFormData(prev => ({ ...prev, imageUrl: e.target.value, imageBase64: '' }))}
+                  />
+                )}
+
+                {captureMode === 'camera' && (
+                  <div className="relative rounded-lg overflow-hidden border border-border bg-black">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      className="w-full h-48 object-cover"
+                    />
+                    <Button
+                      type="button"
+                      onClick={capturePhoto}
+                      disabled={isAnalyzing}
+                      className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-white text-black hover:bg-gray-100 gap-1.5"
+                    >
+                      <Camera className="h-4 w-4" />
+                      Capture
+                    </Button>
+                  </div>
+                )}
+
+                <canvas ref={canvasRef} className="hidden" />
+
+                {formData.imageUrl && captureMode === 'url' ? (
                   <div className="relative mt-2 rounded-lg overflow-hidden border border-border">
                     <img
                       src={formData.imageUrl}
@@ -151,8 +284,18 @@ export function AddItemDialog() {
                         (e.target as HTMLImageElement).src = 'https://via.placeholder.com/400x200?text=Invalid+Image+URL'
                       }}
                     />
+                    {formData.imageBase64 && (
+                      <div className="absolute top-2 right-2 bg-accent text-accent-foreground text-xs px-2 py-0.5 rounded-full">
+                        📷 Captured
+                      </div>
+                    )}
+                    {isAnalyzing && (
+                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                        <p className="text-white text-sm font-medium">Analyzing...</p>
+                      </div>
+                    )}
                   </div>
-                ) : (
+                ) : captureMode === 'url' && (
                   <div className="mt-2 flex h-32 w-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/50">
                     <div className="flex flex-col items-center gap-1 text-muted-foreground">
                       <ImageIcon className="h-6 w-6" />
@@ -299,7 +442,7 @@ export function AddItemDialog() {
             <Button
               type="submit"
               className="bg-accent hover:bg-accent/90 text-accent-foreground"
-              disabled={isSubmitting}
+              disabled={isSubmitting || isAnalyzing}
             >
               {isSubmitting ? "Adding..." : "Add Item"}
             </Button>
