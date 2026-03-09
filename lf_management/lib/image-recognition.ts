@@ -1,61 +1,87 @@
 import type { AIDescription } from './types'
 
-const IMAGE_RECOGNITION_API_URL = process.env.NEXT_PUBLIC_IMAGE_RECOGNITION_API_URL || 'http://localhost:8000'
-
-export interface ImageRecognitionResponse {
-  file_name: string
-  data: AIDescription | { status: string; confidence?: number } | { error: string }
+export interface VisionAnalysisResult extends AIDescription {
+  labels?: string[]
 }
 
-export async function identifyItem(file: File): Promise<AIDescription | null> {
-  const formData = new FormData()
-  formData.append('file', file)
-
+export async function identifyItemFromBase64(base64: string): Promise<VisionAnalysisResult | null> {
   try {
-    const response = await fetch(`${IMAGE_RECOGNITION_API_URL}/identify`, {
+    const response = await fetch('/api/analyze-image', {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: base64 }),
     })
 
     if (!response.ok) {
-      throw new Error(`API error: ${response.status}`)
-    }
-
-    const result: ImageRecognitionResponse = await response.json()
-
-    if ('error' in result.data) {
-      console.error('Image recognition error:', result.data.error)
+      const err = await response.json().catch(() => ({}))
+      console.error('Analyze API error:', err)
       return null
     }
 
-    if ('status' in result.data) {
-      console.warn('Image recognition status:', result.data.status)
-      return null
-    }
-
-    return result.data as AIDescription
+    return await response.json()
   } catch (error) {
-    console.error('Failed to identify item:', error)
+    console.error('Failed to analyze image (base64):', error)
     return null
   }
 }
 
-export function generateDescriptionFromAI(aiDescription: AIDescription): string {
+export async function identifyItemFromUrl(imageUrl: string): Promise<VisionAnalysisResult | null> {
+  try {
+    const response = await fetch('/api/analyze-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl }),
+    })
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      console.error('Analyze API error:', err)
+      return null
+    }
+
+    return await response.json()
+  } catch (error) {
+    console.error('Failed to analyze image (URL):', error)
+    return null
+  }
+}
+
+export async function identifyItem(file: File): Promise<VisionAnalysisResult | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onloadend = async () => {
+      const base64 = reader.result as string
+      resolve(await identifyItemFromBase64(base64))
+    }
+    reader.onerror = () => {
+      console.error('Failed to read file')
+      resolve(null)
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+export function generateDescriptionFromAI(data: VisionAnalysisResult): string {
   const parts: string[] = []
-  
-  if (aiDescription.color) {
-    parts.push(aiDescription.color)
+
+  if (data.color && data.color !== 'unknown') {
+    parts.push(`${data.color.charAt(0).toUpperCase() + data.color.slice(1)} ${data.item}`)
+  } else if (data.item) {
+    parts.push(data.item)
   }
-  
-  if (aiDescription.item) {
-    parts.push(aiDescription.item)
+
+  if (data.text) {
+    parts.push(`Text visible: "${data.text}"`)
   }
-  
-  let description = parts.join(' ')
-  
-  if (aiDescription.text) {
-    description += `. Text visible: "${aiDescription.text}"`
+
+  if (data.labels && data.labels.length > 0) {
+    const extra = data.labels
+      .filter((l) => l.toLowerCase() !== data.item.toLowerCase())
+      .slice(0, 4)
+    if (extra.length > 0) {
+      parts.push(`Tags: ${extra.join(', ')}`)
+    }
   }
-  
-  return description || 'No description available'
+
+  return parts.join('. ') || 'No description available'
 }

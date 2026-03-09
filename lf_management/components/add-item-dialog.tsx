@@ -4,7 +4,8 @@ import { useState, useRef } from 'react'
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 import { initializeFirebase } from '@/lib/firebase'
 import { useAuth } from '@/contexts/auth-context'
-import { identifyItem, generateDescriptionFromAI } from '@/lib/image-recognition'
+import { identifyItemFromBase64, identifyItemFromUrl, generateDescriptionFromAI } from '@/lib/image-recognition'
+import type { VisionAnalysisResult } from '@/lib/image-recognition'
 
 import {
   Dialog,
@@ -25,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Plus, Image as ImageIcon, MapPin, Camera, Link } from "lucide-react"
+import { Plus, Image as ImageIcon, MapPin, Camera, Link, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { ITEM_CATEGORIES, STORAGE_LOCATIONS } from "@/lib/types"
 import type { ItemLocation } from "@/lib/types"
@@ -71,6 +72,21 @@ export function AddItemDialog() {
     setStream(null)
   }
 
+  const applyAnalysis = (data: VisionAnalysisResult | null) => {
+    if (data) {
+      setFormData(prev => ({
+        ...prev,
+        name: prev.name || data.item,
+        description: prev.description || generateDescriptionFromAI(data),
+      }))
+      toast.success(`Detected: ${data.color} ${data.item}`, {
+        description: `Confidence: ${(data.confidence * 100).toFixed(0)}%`
+      })
+    } else {
+      toast.warning("Couldn't identify item", { description: "Fill in details manually." })
+    }
+  }
+
   const capturePhoto = async () => {
     const canvas = canvasRef.current
     const video = videoRef.current
@@ -89,30 +105,30 @@ export function AddItemDialog() {
     try {
       setIsAnalyzing(true)
       const toastId = toast.loading("Analyzing image...")
-
-      // Convert base64 to File and use partner's utility
-      const res = await fetch(dataUrl)
-      const blob = await res.blob()
-      const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' })
-      const data = await identifyItem(file)
-
+      const data = await identifyItemFromBase64(dataUrl)
       toast.dismiss(toastId)
+      applyAnalysis(data)
+    } catch {
+      toast.error("Image analysis failed", { description: "Fill in details manually." })
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }
 
-      if (data) {
-        setFormData(prev => ({
-          ...prev,
-          imageBase64: dataUrl,
-          imageUrl: dataUrl,
-          name: prev.name || data.item,
-          description: prev.description || generateDescriptionFromAI(data),
-        }))
-        toast.success(`Detected: ${data.color} ${data.item}`, {
-          description: `Confidence: ${(data.confidence * 100).toFixed(0)}%`
-        })
-      } else {
-        toast.warning("Couldn't identify item", { description: "Fill in details manually." })
-      }
-    } catch (err) {
+  const analyzeImageUrl = async () => {
+    const url = formData.imageUrl.trim()
+    if (!url) {
+      toast.error("Enter an image URL first")
+      return
+    }
+
+    try {
+      setIsAnalyzing(true)
+      const toastId = toast.loading("Analyzing image...")
+      const data = await identifyItemFromUrl(url)
+      toast.dismiss(toastId)
+      applyAnalysis(data)
+    } catch {
       toast.error("Image analysis failed", { description: "Fill in details manually." })
     } finally {
       setIsAnalyzing(false)
@@ -243,13 +259,26 @@ export function AddItemDialog() {
                 </div>
 
                 {captureMode === 'url' && (
-                  <Input
-                    id="image-url"
-                    placeholder="https://example.com/image.jpg"
-                    className="bg-background border-border"
-                    value={formData.imageBase64 ? '' : formData.imageUrl}
-                    onChange={(e) => setFormData(prev => ({ ...prev, imageUrl: e.target.value, imageBase64: '' }))}
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      id="image-url"
+                      placeholder="https://example.com/image.jpg"
+                      className="bg-background border-border flex-1"
+                      value={formData.imageBase64 ? '' : formData.imageUrl}
+                      onChange={(e) => setFormData(prev => ({ ...prev, imageUrl: e.target.value, imageBase64: '' }))}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 shrink-0"
+                      disabled={isAnalyzing || !formData.imageUrl.trim() || !!formData.imageBase64}
+                      onClick={analyzeImageUrl}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Analyze
+                    </Button>
+                  </div>
                 )}
 
                 {captureMode === 'camera' && (

@@ -14,6 +14,7 @@ import {
 import {
   Package,
   LayoutDashboard,
+  ClipboardList,
   Building,
   Settings,
   LogOut,
@@ -79,6 +80,19 @@ export function AppSidebar() {
               <Link href="/dashboard">
                 <LayoutDashboard className="h-5 w-5" />
                 <span>Dashboard</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              asChild
+              className="text-sidebar-foreground hover:text-sidebar-accent-foreground hover:bg-sidebar-accent"
+              tooltip={!isOpen ? "Claims" : undefined}
+            >
+              <Link href="/dashboard/claims">
+                <ClipboardList className="h-5 w-5" />
+                <span>Claims</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>

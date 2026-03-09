@@ -63,3 +63,16 @@ export const STORAGE_LOCATIONS = [
 ] as const
 
 export type StorageLocation = (typeof STORAGE_LOCATIONS)[number]
+
+export type ClaimStatus = 'pending' | 'approved' | 'rejected'
+
+export interface ClaimRequest {
+  id: string
+  itemId: string
+  itemTitle?: string
+  claimantName: string
+  claimantEmail: string
+  description: string
+  status: ClaimStatus
+  createdAt?: Date
+}
